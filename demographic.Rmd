@@ -1,0 +1,18 @@
+---
+title: "demographic"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+```
+
+
+```{r}
+demographic_df = read_csv("./data/wtc_demographic.csv") |> 
+  janitor::clean_names() |> 
+  mutate(sid = sid %% 1000)
+
+view(demographic_df)
+```
+
