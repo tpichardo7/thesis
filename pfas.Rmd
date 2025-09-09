@@ -1,0 +1,139 @@
+---
+title: "pfas"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(readxl)
+```
+
+```{r}
+pfas_df = read_excel("./data/wtc_pfas_results.xlsx",
+          sheet = "PFAAs",
+          skip = 4, 
+          col_names = TRUE) |> 
+  janitor::clean_names() |> 
+  mutate(
+    pfos = ifelse(pfos == "<LOQ", 0.10, pfos),
+    pfoa = ifelse(pfoa == "<LOQ", 0.04, pfoa),
+    pfbs = ifelse(pfbs == "<LOQ", 0.04, pfbs),
+    pf_hx_s = ifelse(pf_hx_s == "<LOQ", 0.04, pf_hx_s),
+    pfds = ifelse(pfds == "<LOQ", 0.04, pfds),
+    pfosa = ifelse(pfosa == "<LOQ", 0.04, pfosa),
+    pf_hx_a = ifelse(pf_hx_a == "<LOQ", 0.04, pf_hx_a),
+    pf_hp_a = ifelse(pf_hp_a == "<LOQ", 0.04, pf_hp_a),
+    pfda = ifelse(pfda == "<LOQ", 0.04, pfda),
+    pf_un_da = ifelse(pf_un_da == "<LOQ", 0.10, pf_un_da),
+    pf_do_da = ifelse(pf_do_da == "<LOQ", 0.10, pf_do_da),
+    pfna = ifelse(pfna == "<LOQ", 0.10, pfna)
+  ) |>
+  mutate(across(pfos:pfna, as.numeric)) |> 
+  rename(sid = subject_id)
+      
+
+pfas_df = pfas_df[1:(nrow(pfas_df) - 4), ]
+view(pfas_df)
+```
+
+```{r}
+maternal_df = pfas_df |> 
+  filter(startsWith(as.character(sid), "1")) |> 
+  mutate(sid = as.numeric(sid) %% 1000)
+view(maternal_df)
+
+cord_df = pfas_df |> 
+  filter(startsWith(as.character(sid), "2")) |> 
+  mutate(sid = as.numeric(sid) %% 1000)
+view(cord_df)
+```
+
+```{r}
+summary(pfas_df[ , c("pfos", "pfoa", "pfbs", "pf_hx_s", "pfds", "pfosa", "pf_hx_a", "pf_hp_a", "pfda", "pf_un_da", "pf_do_da", "pfna")])
+
+summary(maternal_df[ , c("pfos", "pfoa", "pfbs", "pf_hx_s", "pfds", "pfosa", "pf_hx_a", "pf_hp_a", "pfda", "pf_un_da", "pf_do_da", "pfna")])
+
+summary(cord_df[ , c("pfos", "pfoa", "pfbs", "pf_hx_s", "pfds", "pfosa", "pf_hx_a", "pf_hp_a", "pfda", "pf_un_da", "pf_do_da", "pfna")])
+```
+
+```{r}
+ggplot(pfas_df, aes(x = pfos)) +
+  geom_histogram(binwidth = 1) +
+  theme_minimal()
+
+ggplot(maternal_df, aes(x = pfos)) +
+  geom_histogram(binwidth = 1) +
+  theme_minimal()
+
+ggplot(cord_df, aes(x = pfos)) +
+  geom_histogram(binwidth = 1) +
+  theme_minimal()
+```
+
+
+
+
+
+```{r}
+maternal_df = maternal_df |> 
+  mutate(sample_type = "Maternal")
+cord_df = cord_df |> 
+  mutate(sample_type = "Cord")
+```
+
+```{r}
+combined_df = bind_rows(maternal_df, cord_df)
+```
+
+```{r}
+pfas_long = combined_df |> 
+  pivot_longer(cols = pfos:pfna, 
+               names_to = "pfas", 
+               values_to = "concentration")
+```
+
+```{r}
+ggplot(pfas_long, aes(x = concentration, fill = sample_type)) +
+  geom_histogram(position = "identity", alpha = 0.6, bins = 30) +
+  facet_wrap(~pfas, scales = "free") +
+  scale_fill_manual(values = c("Maternal" = "steelblue", "Cord" = "tomato")) +
+  theme_minimal() +
+  labs(x = "Concentration", y = "Count", fill = "Sample Type",
+       title = "Distribution of PFAS in Maternal vs Cord Samples")
+```
+
+
+
+```{r}
+demographic_df = read_csv("./data/wtc_demographic.csv") |> 
+  janitor::clean_names() |> 
+  mutate(sid = sid %% 1000)
+
+view(demographic_df)
+```
+
+```{r}
+lipids_df = read_excel("./data/lipids.xls",
+            sheet = "Final Data",
+            skip = 1, 
+            col_names = TRUE) |> 
+  janitor::clean_names() |> 
+  mutate(sample_id = as.numeric(sub("^T", "", sample_id))) |> 
+  mutate(sample_id = sample_id %% 1000) |> 
+  rename(sid = sample_id) |> 
+  drop_na()
+
+view(lipids_df)
+```
+
+```{r}
+pfas_df = pfas_df |>
+  mutate(sid = as.numeric(sid))
+demographic_df = demographic_df |>
+  mutate(sid = as.numeric(sid))
+
+merged_df = demographic_df |> 
+  inner_join(lipids_df, by = "sid")
+view(merged_df)
+```
+
