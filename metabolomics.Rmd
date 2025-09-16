@@ -1,0 +1,17 @@
+---
+title: "metabolomics"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+```
+
+```{r}
+c18 = read_tsv("./data/C18neg_batch_file.txt")
+view(c18)
+
+hilic = read_tsv("./data/HILpos_batch_file.txt")
+view(hilic)
+```
+
