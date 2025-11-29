@@ -1,0 +1,540 @@
+---
+title: "pfasxuntargeted"
+output: github_document
+---
+
+```{r}
+library(tidyverse)    # data manipulation + ggplot2
+library(readxl)       # read excel files
+library(matrixStats)  # fast row/column organization
+library(janitor)      # clean column names
+library(ggrepel)      # non-overlapping text labels in plots
+library(purrr)        # map() functional programming
+library(broom)        # tidy statistical output
+library(gt)           # pretty output tables
+```
+
+# Part 1: Load & Preprocess C18 Metabolomics Data
+
+```{r}
+
+#  Load metabolomics data
+c18_lipids = read_tsv("./data/c18_lipids.txt") |> clean_names()
+```
+
+
+## Replace zeros/NAs before log-transform
+Zeros cannot be log-transformed, so this function replaces 0 or NA values with half of the minimum non-zero value in that feature.
+```{r}
+# Replace zeros/NAs awith half the minimum positive value
+replace_zero = function(x) {
+  x[x == 0 | is.na(x)] = min(x[x > 0], na.rm = TRUE)/2
+  x
+}
+```
+
+## Extract intensity columns (those starting with "sd_") and clean matrix
+```{r}
+# columns that contain intensity data
+intensity_cols = grep("^sd_", colnames(c18_lipids), value = TRUE)
+
+# apply zero-replacement and convert to matrix
+intensity_mat = c18_lipids |>
+  select(all_of(intensity_cols)) |>
+  mutate(across(everything(), replace_zero)) |>
+  as.matrix()
+```
+
+```{r}
+# Log-transform intensities
+log_intensity = log2(intensity_mat)
+```
+
+
+## Feature filtering: RSD < 0.5 and present in >= 50% of samples
+```{r}
+# relative standard deviation per feature
+feature_rsd = rowSds(log_intensity, na.rm = TRUE) / rowMeans(log_intensity, na.rm = TRUE)
+
+# number of samples where features was detected
+presence = rowSums(!is.na(intensity_mat))
+
+# keep reasonably stable + present features
+keep_features = (feature_rsd < 0.5) & (presence >= 0.5 * ncol(intensity_mat))
+
+X = log_intensity[keep_features, , drop = FALSE]
+feature_ids = c18_lipids$lm_id[keep_features]
+```
+
+```{r}
+# remove features with near-zero variance
+feature_var = rowVars(X, na.rm = TRUE)
+
+X = X[feature_var > 1e-6, , drop = FALSE]
+feature_ids = feature_ids[feature_var > 1e-6]
+```
+
+
+# Part 2: Load & Prepare PFAS Exposure Data
+
+```{r}
+# Load PFAS exposure data
+pfas_df = read_excel("./data/wtc_pfas_results.xlsx", sheet = "PFAAs", skip = 4) |> 
+  clean_names() |> 
+  mutate(across(pfos:pfna, ~ ifelse(. == "<LOQ", 0.04, as.numeric(.)))) |> 
+  slice(1:(n() - 4)) |>   # remove extra rows
+  dplyr::select(subject_id, pfos, pfoa, pfbs, pf_hx_s, pfds, pfosa, pf_hx_a, pf_hp_a, pfda, pf_un_da, pf_do_da, pfna) |> 
+  mutate(ID = paste0("T", subject_id))
+```
+
+
+# Part 3: Merge C18 metabolites with PFAS & Correlation Analysis
+
+```{r}
+c18_script = read_csv("./data/c18_70detect_log2.csv")
+
+merged = inner_join(pfas_df, c18_script, by = "ID") |> 
+  mutate(log2_pfos = log2(pfos)) |> 
+  mutate(log2_pfoa = log2(pfoa))
+
+view(merged)
+```
+
+## Identify metabolite feature names
+```{r}
+feature_names = names(c18_script)[-c(1:2)] # save the names of the features to subset the merged file
+
+# Run multiple correlation tests using the map function from the purrr package 
+pfos_cor_test_results = merged |> 
+    dplyr::select(all_of(feature_names)) |> 
+    purrr::map(~cor.test(merged$log2_pfos, .x, method = "pearson"))
+
+# Tidy the results (a list) into a dataframe using the tidy function from the broom package
+pfos_cor_test_results_tidy = pfos_cor_test_results |> 
+    map_df(~broom::tidy(.x)) |> 
+    mutate(feature = feature_names) # add the names of the features if necessary
+
+```
+
+## Adjust p-values using FDR (BH)
+```{r}
+pfos_cor_test_results_tidy = pfos_cor_test_results_tidy |>
+  mutate(p_adj = p.adjust(p.value, method = "BH"))
+```
+
+## Volcano-style scatter plot
+```{r}
+pfos_cor_test_results_tidy |> 
+  ggplot(aes(x = estimate, y = -log10(p_adj))) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = -log10(0.05), color = "red", linetype = "dashed") +
+  labs(
+    x = "Pearson correlation with log2(PFOS)",
+    y = "-log10(FDR-adjusted p-value)",
+    title = "Metabolite–PFOS Correlations"
+  ) +
+  theme_minimal()
+```
+
+## Highlight positive/negative associations
+```{r}
+pfos_cor_test_results_tidy |> 
+  ggplot(aes(x = estimate, y = -log10(p_adj), color = estimate > 0)) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = -log10(0.05), color = "red", linetype = "dashed") +
+  scale_color_manual(values = c("TRUE" = "firebrick", "FALSE" = "steelblue"),
+                     labels = c("Negative", "Positive")) +
+  labs(
+    x = "Pearson correlation with log2(PFOS)",
+    y = "-log10(FDR-adjusted p-value)",
+    title = "Metabolite–PFOS Correlations",
+    color = "Correlation Direction"
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+pfos_cor_test_results_tidy |>
+  filter(p_adj < 0.05) |>
+  arrange(desc(abs(estimate)))
+```
+
+
+## Extract significant hits
+```{r}
+top_hits = pfos_cor_test_results_tidy |>
+  filter(p_adj < 0.05) |>         
+  arrange(p_adj) |>                
+  slice_head(n = 10)                
+```
+
+## Annotate the top significant features in the scatter plot
+```{r}
+pfos_cor_test_results_tidy |>
+  ggplot(aes(x = estimate, y = -log10(p_adj), color = estimate > 0)) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = -log10(0.05), color = "red", linetype = "dashed") +
+  geom_text_repel(
+    data = top_hits,
+    aes(label = feature),
+    size = 3.5,
+    max.overlaps = 15,
+    box.padding = 0.4,
+    point.padding = 0.3,
+    segment.color = "gray50"
+  ) +
+  scale_color_manual(
+    values = c("TRUE" = "firebrick", "FALSE" = "steelblue"),
+    labels = c("Negative", "Positive"),
+    name = "Correlation Direction"
+  ) +
+  labs(
+    x = "Pearson correlation with log2(PFOS)",
+    y = "-log10(FDR-adjusted p-value)",
+    title = "Metabolite–PFOS Correlations"
+  ) +
+  theme_minimal()
+```
+
+# Part 4: Load & Preprocess HILIC Metabolomics Data
+
+```{r}
+# Load HILIC metabolomics data
+hilic_lipids = read_tsv("./data/hilic_lipids.txt") |> clean_names()
+```
+
+## Replace zeros/NAs before log-transform
+Zeros cannot be log-transformed, so this function replaces 0 or NA values with half of the minimum non-zero value in that feature.
+```{r}
+# Replace zeros/NAs with half the minimum positive value
+replace_zero = function(x) {
+  x[x == 0 | is.na(x)] = min(x[x > 0], na.rm = TRUE)/2
+  x
+}
+```
+
+## Extract intensity columns (those starting with "sd_") and clean matrix
+```{r}
+# columns that contain intensity data
+intensity_cols = grep("^sd_", colnames(hilic_lipids), value = TRUE)
+
+# apply zero-replacement and convert to matrix
+intensity_mat = hilic_lipids |>
+  select(all_of(intensity_cols)) |>
+  mutate(across(everything(), replace_zero)) |>
+  as.matrix()
+```
+
+```{r}
+# Log-transform intensities
+log_intensity = log2(intensity_mat)
+```
+
+## Feature filtering: RSD < 0.5 and present in >= 50% of samples
+```{r}
+# relative standard deviation per feature
+feature_rsd = rowSds(log_intensity, na.rm = TRUE) / rowMeans(log_intensity, na.rm = TRUE)
+
+# number of samples where feature was detected
+presence = rowSums(!is.na(intensity_mat))
+
+# keep reasonably stable + present features
+keep_features = (feature_rsd < 0.5) & (presence >= 0.5 * ncol(intensity_mat))
+
+X = log_intensity[keep_features, , drop = FALSE]
+feature_ids = hilic_lipids$lm_id[keep_features]
+```
+
+```{r}
+# remove features with near-zero variance
+feature_var = rowVars(X, na.rm = TRUE)
+
+X = X[feature_var > 1e-6, , drop = FALSE]
+feature_ids = feature_ids[feature_var > 1e-6]
+```
+
+# Part 5: Merge HILIC metabolites with PFAS & Correlation Analysis
+
+```{r}
+hilic_script = read_tsv("./data/hilic_70detect_log2.csv")
+
+hilic_merged = inner_join(pfas_df, hilic_script, by = "ID") |> 
+  mutate(log2_pfos = log2(pfos)) |> 
+  mutate(log2_pfoa = log2(pfoa))
+
+view(hilic_merged)
+```
+
+```{r}
+#identify metabolite feature names
+feature_names = names(hilic_script)[-c(1:2)] # save the names of the features to subset the merged file
+
+# Run multiple Pearson correlations tests between PFOS and all metabolites using the map function from the purrr package ----
+pfos_cor_test_results = hilic_merged |> 
+    dplyr::select(all_of(feature_names)) |> 
+    purrr::map(~cor.test(hilic_merged$log2_pfos, .x, method = "pearson"))
+
+# Tidy the results (a list) into a dataframe using the tidy function from the broom package
+pfos_cor_test_results_tidy = pfos_cor_test_results |> 
+    map_df(~broom::tidy(.x)) |> 
+    mutate(feature = feature_names) # add the names of the features
+
+```
+
+```{r}
+# adjust p-values using FDR (BH)
+pfos_cor_test_results_tidy = pfos_cor_test_results_tidy |>
+  mutate(p_adj = p.adjust(p.value, method = "BH"))
+```
+
+```{r}
+# Volcano-style scatter plot
+pfos_cor_test_results_tidy |> 
+  ggplot(aes(x = estimate, y = -log10(p_adj))) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = -log10(0.05), color = "red", linetype = "dashed") +
+  labs(
+    x = "Pearson correlation with log2(PFOS)",
+    y = "-log10(FDR-adjusted p-value)",
+    title = "Metabolite–PFOS Correlations"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# Highlight positive/negative associations
+pfos_cor_test_results_tidy |> 
+  ggplot(aes(x = estimate, y = -log10(p_adj), color = estimate > 0)) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = -log10(0.05), color = "red", linetype = "dashed") +
+  scale_color_manual(values = c("TRUE" = "firebrick", "FALSE" = "steelblue"),
+                     labels = c("Negative", "Positive")) +
+  labs(
+    x = "Pearson correlation with log2(PFOS)",
+    y = "-log10(FDR-adjusted p-value)",
+    title = "Metabolite–PFOS Correlations",
+    color = "Correlation Direction"
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+map_corr = pfos_cor_test_results_tidy |>
+  filter(p_adj < 0.05) |>
+  arrange(desc(abs(estimate)))
+```
+
+```{r}
+# extract significant hits
+top_hits = pfos_cor_test_results_tidy |>
+  filter(p_adj < 0.05) |>         
+  arrange(p_adj) |>                
+  slice_head(n = 10)                
+```
+
+```{r}
+# annotate the top significant features in the scatter plot
+pfos_cor_test_results_tidy |>
+  ggplot(aes(x = estimate, y = -log10(p_adj), color = estimate > 0)) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = -log10(0.05), color = "red", linetype = "dashed") +
+  geom_text_repel(
+    data = top_hits,
+    aes(label = feature),
+    size = 3.5,
+    max.overlaps = 15,
+    box.padding = 0.4,
+    point.padding = 0.3,
+    segment.color = "gray50"
+  ) +
+  scale_color_manual(
+    values = c("TRUE" = "firebrick", "FALSE" = "steelblue"),
+    labels = c("Negative", "Positive"),
+    name = "Correlation Direction"
+  ) +
+  labs(
+    x = "Pearson correlation with log2(PFOS)",
+    y = "-log10(FDR-adjusted p-value)",
+    title = "Metabolite–PFOS Correlations"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+ggplot(pfos_cor_test_results_tidy, aes(x = estimate, y = -log10(p_adj))) +
+  geom_point() +
+  geom_smooth(method = "lm", color = "red") +
+  theme_bw()
+```
+
+# Part 6: Demographics + Lipids Merge & Summary Tables
+
+```{r}
+# load and clean demographics
+demographic_df = read_csv("./data/wtc_demographic.csv") |>
+  clean_names() |> 
+  mutate(sid = sid %% 1000)
+
+# convert several variables to labeled factors
+demographic_clean = demographic_df |>
+  mutate(
+    gender = factor(gender, labels = c("Male", "Female")),
+    c_section = factor(c_section, labels = c("No", "Yes")),
+    nicu = factor(nicu, labels = c("No", "Yes")),
+    edu = factor(edu, labels = c("≤High School", "Some College", "College+")),
+    marital = factor(marital, labels = c("Single", "Married")),
+    bmi_cat_new = factor(bmi_cat_new, labels = c("Underweight/Normal", "Overweight", "Obese")),
+    everbf = factor(everbf, labels = c("No", "Yes")),
+    family_smoking = factor(family_smoking, labels = c("No", "Yes")),
+    medicaid = factor(medicaid, labels = c("No", "Yes"))
+  )
+```
+
+```{r}
+lipids_df = read_excel("./data/lipids.xls",
+            sheet = "Final Data",
+            skip = 1, 
+            col_names = TRUE) |> 
+  janitor::clean_names() |> 
+  mutate(sample_id = as.numeric(sub("^T", "", sample_id))) |> 
+  mutate(sample_id = sample_id %% 1000) |> 
+  rename(sid = sample_id) |> 
+  drop_na()
+
+view(lipids_df)
+```
+
+```{r}
+merged_df = left_join(lipids_df, demographic_clean, by = "sid")
+
+view(merged_df)
+```
+
+```{r}
+demo_summary = demographic_clean |>
+  select(
+    "Infant Gender" = gender, 
+    "Mother Age" = m_age, 
+    "Maternal BMI Category" = bmi_cat_new, 
+    "Maternal Education Level" = edu, 
+    "Maternal Marital Status" = marital, 
+    "Number of Previous Births" = parity, 
+    "NICU Admission" = nicu, 
+    "C-Section Delivery" = c_section, 
+    "Ever Breastfed" = everbf, 
+    "Smoking in Household" = family_smoking, 
+    "Insurance Type" = medicaid) |>
+  tbl_summary(
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      all_categorical() ~ "{n} ({p}%)"
+    ),
+    missing = "no"
+  ) |>
+  modify_header(label ~ "**Variable**") |>
+  bold_labels()
+
+demo_summary
+```
+
+```{r}
+pfas_df = pfas_df |>
+  mutate(
+    pfbs   = as.numeric(pfbs),
+    pfosa  = as.numeric(pfosa)
+  )
+```
+
+```{r}
+pfas_summary = pfas_df |> 
+  select(
+    PFOS = pfos,
+    PFOA = pfoa,
+    PFBS = pfbs,
+    PFHxS = pf_hx_s,
+    PFDS = pfds,
+    PFOSA = pfosa,
+    PFHxA = pf_hx_a,
+    PFHpA = pf_hp_a,
+    PFDA = pfda,
+    PFUnDA = pf_un_da,
+    PFDoDA = pf_do_da,
+    PFNA = pfna
+  ) |> 
+  tbl_summary(
+    statistic = all_continuous() ~ "{mean} ({sd})",
+    missing = "no"
+  ) |> 
+  modify_header(label ~ "**PFAS Compound**") |> 
+  modify_spanning_header(all_stat_cols() ~ "**PFAS Exposure (ng/mL)**") |> 
+  bold_labels()
+```
+
+# Part 7: Correlation Function for C18 and HILIC
+
+```{r}
+# function to run correlations and tidy results
+run_correlations = function(merged_df, feature_names, analyte_name) {
+  cor_results = merged_df |>
+    select(all_of(feature_names)) |>
+    map(~ cor.test(merged_df[[analyte_name]], .x, method = "pearson")) |>
+    map_df(~ tidy(.x)) |>
+    mutate(feature = feature_names) |>
+    mutate(p_adj = p.adjust(p.value, method = "BH"))
+  
+  return(cor_results)
+}
+
+#C18 correlations
+c18_feature_names = names(c18_script)[-c(1:2)]
+c18_pfos_corr = run_correlations(merged, c18_feature_names, "log2_pfos") |> mutate(platform = "C18", analyte = "PFOS")
+c18_pfoa_corr = run_correlations(merged, c18_feature_names, "log2_pfoa") |> mutate(platform = "C18", analyte = "PFOA")
+
+#HILIC correlations
+hilic_feature_names = names(hilic_script)[-c(1:2)]
+hilic_pfos_corr = run_correlations(hilic_merged, hilic_feature_names, "log2_pfos") |> mutate(platform = "HILIC", analyte = "PFOS")
+hilic_pfoa_corr = run_correlations(hilic_merged, hilic_feature_names, "log2_pfoa") |> mutate(platform = "HILIC", analyte = "PFOA")
+```
+
+# Part 8: Combine All Results & Save Table
+
+```{r}
+supplemental_table = bind_rows(
+  c18_pfos_corr, c18_pfoa_corr,
+  hilic_pfos_corr, hilic_pfoa_corr
+) |>
+  left_join(c18_lipids |> select(lm_id), by = c("feature" = "lm_id")) |>
+  arrange(analyte, platform, desc(abs(estimate))) |>
+  select(platform, analyte, feature, estimate, p.value, p_adj)
+
+write_csv(supplemental_table, "metabolite_associations.csv")
+```
+
+```{r}
+# reader friendly gt table
+supplemental_table_gt = supplemental_table |>
+  gt() |>
+  tab_header(
+    title = "Metabolite Associations with PFOS and PFOA",
+    subtitle = "C18 and HILIC Platforms"
+  ) |>
+  cols_label(
+    platform = "Platform",
+    analyte = "Analyte",
+    feature = "Metabolite",
+    estimate = "Pearson r",
+    p.value = "p-value",
+    p_adj = "FDR-adjusted p"
+  ) |>
+  fmt_number(columns = c(estimate, p.value, p_adj), decimals = 3) |>
+  tab_style(
+    style = list(
+      cell_text(weight = "bold")
+    ),
+    locations = cells_column_labels(columns = everything())
+  )
+```
+
+
