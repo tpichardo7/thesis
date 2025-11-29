@@ -8,10 +8,397 @@ library(tidyverse)
 ```
 
 ```{r}
-c18 = read_tsv("./data/C18neg_batch_file.txt")
-view(c18)
+c18 = read_tsv("./data/C18neg_batch_file.txt") |> 
+  janitor::clean_names()
+#view(c18)
 
-hilic = read_tsv("./data/HILpos_batch_file.txt")
-view(hilic)
+hilic = read_tsv("./data/HILpos_batch_file.txt") |> 
+  janitor::clean_names()
+#view(hilic)
+```
+
+```{r}
+c18_lipids = read_tsv("./data/c18_lipids.txt") |> 
+  janitor::clean_names()
+#view(c18_lipids)
+
+hilic_lipids = read_tsv("./data/hilic_lipids.txt") |> 
+  janitor::clean_names()
+#view(hilic_lipids)
+```
+
+
+
+```{r}
+filtered <- c18_lipids %>%
+  filter(num_pres_biological_samples / max(num_pres_biological_samples, na.rm = TRUE) > 0.7)
+```
+
+```{r}
+replacezero <- function(x) "[<-"(x, !x | is.na(x), min(x[x > 0], na.rm = TRUE)/2)
+
+intensity <- c18_lipids %>%
+  select(starts_with("sd_")) %>%
+  mutate(across(everything(), replacezero))
+```
+
+```{r}
+log_intensity <- intensity %>%
+  mutate(across(everything(), log2))
+```
+
+```{r}
+processed <- c18_lipids %>%
+  select(match_category_1:sd_240808_002) %>%  # adjust to include all annotation cols
+  bind_cols(log_intensity)
+```
+
+```{r}
+library(FactoMineR)
+library(factoextra)
+
+pca_res <- prcomp(t(log_intensity), scale. = TRUE) # transpose: samples as rows
+fviz_pca_ind(pca_res, geom = "point")
+```
+
+
+```{r}
+library(dplyr)
+
+# Select only numeric columns for RSD calculation
+intensity_cols <- c18_lipids %>% select(where(is.numeric)) %>% colnames()
+
+c18_lipids <- c18_lipids %>%
+  rowwise() %>%
+  mutate(
+    median_cv = {
+      values = c_across(all_of(intensity_cols))  # only numeric columns
+      if(all(is.na(values)) || mean(values, na.rm = TRUE) == 0) {
+        NA_real_
+      } else {
+        sd(values, na.rm = TRUE) / mean(values, na.rm = TRUE)
+      }
+    }
+  ) %>%
+  ungroup()
+```
+
+```{r}
+# Identify numeric columns
+numeric_cols <- c18_lipids %>%
+  select(where(is.numeric)) %>%
+  colnames()
+
+numeric_cols
+```
+
+```{r}
+library(ggplot2)
+
+ggplot(c18_lipids, aes(x = median_cv)) +
+  geom_histogram(binwidth = 0.05, fill = "steelblue", color = "black") +
+  labs(
+    title = "Distribution of Median RSDs Across Lipids",
+    x = "Median Relative Standard Deviation (RSD)",
+    y = "Number of Lipids"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+summary(c18_lipids$median_cv)
+hist(c18_lipids$median_cv, breaks = 50, main = "Median RSD Distribution", xlab = "RSD")
+```
+
+```{r}
+c18_lipids_filtered <- c18_lipids %>%
+  filter(!is.na(median_cv) & median_cv < 0.5)  # keep lipids with RSD < 50%
+```
+
+```{r}
+write.csv(c18_lipids, "c18_lipids_with_rsd.csv", row.names = FALSE)
+```
+
+
+```{r}
+processedlites_long = processed |> 
+  pivot_longer(
+    cols = starts_with("sd_"),
+    names_to = "sample_id",
+    values_to = "intensity"
+  )
+```
+
+```{r}
+write.csv(head(processedlites_long, 1000), "processedlites_preview.csv", row.names = FALSE)
+```
+
+
+
+```{r}
+# Get all intensity columns
+intensity_cols <- grep("^sd_", colnames(processed), value = TRUE)
+```
+
+```{r}
+feature_stats <- processed %>%
+  rowwise() %>%
+  mutate(
+    mean_intensity = mean(c_across(all_of(intensity_cols)), na.rm = TRUE),
+    sd_intensity   = sd(c_across(all_of(intensity_cols)), na.rm = TRUE),
+    cv             = sd_intensity / mean_intensity
+  ) %>%
+  ungroup()
+```
+
+```{r}
+feature_stats_filtered <- feature_stats %>%
+  filter(
+    cv < 0.3,                      # keep features with reasonable reproducibility
+    num_pres_all_samples > 0        # optional: present in at least one sample
+  )
+```
+
+```{r}
+library(readxl)
+pfas_df = read_excel("./data/wtc_pfas_results.xlsx",
+          sheet = "PFAAs",
+          skip = 4, 
+          col_names = TRUE) |> 
+  janitor::clean_names() |> 
+  mutate(
+    pfos = ifelse(pfos == "<LOQ", 0.10, pfos),
+    pfoa = ifelse(pfoa == "<LOQ", 0.04, pfoa),
+    pfbs = ifelse(pfbs == "<LOQ", 0.04, pfbs),
+    pf_hx_s = ifelse(pf_hx_s == "<LOQ", 0.04, pf_hx_s),
+    pfds = ifelse(pfds == "<LOQ", 0.04, pfds),
+    pfosa = ifelse(pfosa == "<LOQ", 0.04, pfosa),
+    pf_hx_a = ifelse(pf_hx_a == "<LOQ", 0.04, pf_hx_a),
+    pf_hp_a = ifelse(pf_hp_a == "<LOQ", 0.04, pf_hp_a),
+    pfda = ifelse(pfda == "<LOQ", 0.04, pfda),
+    pf_un_da = ifelse(pf_un_da == "<LOQ", 0.10, pf_un_da),
+    pf_do_da = ifelse(pf_do_da == "<LOQ", 0.10, pf_do_da),
+    pfna = ifelse(pfna == "<LOQ", 0.10, pfna)
+  ) |>
+  mutate(across(pfos:pfna, as.numeric)) |> 
+  rename(sid = subject_id)
+      
+
+pfas_df = pfas_df[1:(nrow(pfas_df) - 4), ]
+```
+
+
+```{r}
+# Load libraries
+library(dplyr)
+library(tidyr)
+library(readr)
+
+# -----------------------------
+# 2. Identify intensity columns
+# -----------------------------
+# Select columns starting with "sd_"
+intensity_cols <- grep("^sd_", colnames(processed), value = TRUE)
+
+# Optional: ensure intensity_cols are in same order as pfas_df$sid
+# This assumes column names in processed can be matched to pfas_df$sid
+# Rename intensity columns to match pfas_df$sid if necessary
+# Example:
+# colnames(processed)[match(pfas_df$sid, colnames(processed))] <- pfas_df$sid
+
+# -----------------------------
+# 3. Calculate feature-level statistics
+# -----------------------------
+feature_stats <- processed %>%
+  rowwise() %>%
+  mutate(
+    mean_intensity = mean(c_across(all_of(intensity_cols)), na.rm = TRUE),
+    sd_intensity = sd(c_across(all_of(intensity_cols)), na.rm = TRUE),
+    cv = sd_intensity / mean_intensity
+  ) %>%
+  ungroup()
+
+# -----------------------------
+# 4. Filter low-quality features
+# -----------------------------
+# Example: filter features with CV < 0.5 and detected in at least 50% of samples
+feature_stats_filtered <- feature_stats %>%
+  filter(cv < 0.5) %>%
+  filter(num_pres_all_samples >= 0.5 * length(intensity_cols))
+
+# -----------------------------
+# 5. Calculate correlations with PFAS
+# -----------------------------
+# Preallocate vectors for correlation results
+n_features <- nrow(feature_stats_filtered)
+corr_pfos <- numeric(n_features)
+corr_pfoa <- numeric(n_features)
+
+# Loop over features
+for (i in seq_len(n_features)) {
+  intensities <- as.numeric(feature_stats_filtered[i, intensity_cols])
+}
+
+# Subset the processed columns to match PFAS samples
+intensity_cols <- intersect(names(processed), paste0("sd_", pfas_df$sid))
+X <- as.matrix(processed[, intensity_cols])
+
+# Make sure PFAS rows match the same order
+Y <- pfas_df[match(sub("sd_", "", intensity_cols), pfas_df$sid), c("pfos", "pfoa")]
+
+# Add correlation results to filtered features
+feature_stats_filtered <- feature_stats_filtered %>%
+  mutate(corr_pfos = corr_pfos,
+         corr_pfoa = corr_pfoa)
+
+# -----------------------------
+# 6. Optional: Save results
+# -----------------------------
+write_csv(feature_stats_filtered, "feature_stats_with_correlations.csv")
+
+# -----------------------------
+# 7. Summary of top correlated features
+# -----------------------------
+top_features_pfos <- feature_stats_filtered %>%
+  arrange(desc(abs(corr_pfos))) %>%
+  slice_head(n = 20)
+
+top_features_pfoa <- feature_stats_filtered %>%
+  arrange(desc(abs(corr_pfoa))) %>%
+  slice_head(n = 20)
+
+# Print summaries
+print(top_features_pfos)
+print(top_features_pfoa)
+```
+
+```{r}
+library(readr)
+library(dplyr)
+library(matrixStats)
+
+# Align sample IDs
+intensity_cols <- grep("^sd_", colnames(processed), value = TRUE)
+sample_ids <- sub("^sd_", "", intensity_cols)
+pfas_df <- pfas_df[match(sample_ids, pfas_df$sid), ]
+
+# Prepare matrices
+X <- as.matrix(processed[, intensity_cols])
+Y <- as.matrix(pfas_df[, c("pfos","pfoa")])
+
+# Filter zero-variance features
+keep <- rowVars(X) > 1e-6
+X <- X[keep, , drop=FALSE]
+processed_filtered <- processed[keep, ]
+
+# Center & scale
+X_scaled <- sweep(X, 1, rowMeans(X, na.rm=TRUE), "-")
+X_scaled <- sweep(X_scaled, 1, rowSds(X, na.rm=TRUE), "/")
+Y_centered <- scale(Y, center=TRUE, scale=TRUE)
+
+# Compute correlations
+cor_mat <- (X_scaled %*% Y_centered) / (ncol(X_scaled)-1)
+rownames(cor_mat) <- processed_filtered$lm_id
+colnames(cor_mat) <- c("PFOS","PFOA")
+
+# Filter significant features
+sig_threshold <- 0.3
+sig_features <- processed_filtered[apply(abs(cor_mat), 1, max) > sig_threshold, ]
+
+# Safe histogram
+plot_hist_safe(cor_mat[, "PFOS"], "Correlation with PFOS")
+plot_hist_safe(cor_mat[, "PFOA"], "Correlation with PFOA")
+
+# -----------------------------
+# 8. Save results
+# -----------------------------
+write_csv(as.data.frame(cor_mat), "feature_pfas_correlations.csv")
+write_csv(sig_features, "significant_features.csv")
+```
+
+
+
+
+
+```{r}
+##sample_ids = sub("^sd_", "", colnames(X))
+##pfas_df = pfas_df[match(sample_ids, pfas_df$sid), ]
+##Y = as.matrix(pfas_df[, c("pfos","pfoa")])
+```
+
+```{r}
+
+# 7. Center & scale matrices for correlation
+X_scaled = sweep(X, 1, rowMeans(X, na.rm = TRUE), "-")
+X_scaled = sweep(X_scaled, 1, rowSds(X_scaled, na.rm = TRUE), "/")
+Y_scaled = scale(Y, center = TRUE, scale = TRUE)
+```
+
+```{r}
+
+# 8. Compute correlations (vectorized)
+cor_mat = X_scaled %*% Y_scaled / (ncol(X_scaled) - 1)
+rownames(cor_mat) = feature_ids
+colnames(cor_mat) = c("PFOS","PFOA")
+```
+
+```{r}
+
+# 9. Filter significant correlations
+sig_threshold = 0.3
+sig_features = feature_ids[apply(abs(cor_mat), 1, max) > sig_threshold]
+```
+
+```{r}
+
+# 10. Safe histogram function
+plot_hist_safe = function(corr_vec, title) {
+  corr_vec = corr_vec[!is.na(corr_vec)]
+  if(length(corr_vec) > 0) {
+    hist(corr_vec, main = title, xlab = "Correlation", breaks = 30, col = "steelblue", border = "black")
+  } else {
+    message("No valid correlations to plot for ", title)
+  }
+}
+
+plot_hist_safe(cor_mat[, "PFOS"], "Feature Correlations with PFOS")
+plot_hist_safe(cor_mat[, "PFOA"], "Feature Correlations with PFOA")
+```
+
+```{r}
+
+# 11. Save results
+write_csv(as.data.frame(cor_mat), "feature_pfas_correlations.csv")
+write_csv(data.frame(lm_id = sig_features), "significant_features.csv")
+```
+
+```{r}
+
+# 12. Summary of top features
+top_features_pfos = feature_ids[order(-abs(cor_mat[, "PFOS"]))][1:20]
+top_features_pfoa = feature_ids[order(-abs(cor_mat[, "PFOA"]))][1:20]
+
+cat("Top 20 PFOS-correlated features:\n"); print(top_features_pfos)
+cat("Top 20 PFOA-correlated features:\n"); print(top_features_pfoa)
+```
+
+```{r}
+# Load packages
+library(dplyr)
+library(readr)
+
+# Read in the datasets
+pfas = read_csv("wtc_pfas.csv")
+lipids = read_csv("c18_lipids_with_rsd.csv")
+
+# Standardize column names (optional but helps avoid case issues)
+names(pfas) = tolower(trimws(names(pfas)))
+names(lipids) = tolower(trimws(names(lipids)))
+
+# Merge by "sampleid" (inner join = only rows present in both datasets)
+merged = inner_join(pfas, lipids, by = "sampleid")
+
+# Save merged dataset
+write_csv(merged, "merged_pfas_lipids.csv")
 ```
 
