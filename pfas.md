@@ -31,6 +31,8 @@ pfas_df = read_excel("./data/wtc_pfas_results.xlsx",
 ``` r
 pfas_df = pfas_df[1:(nrow(pfas_df) - 4), ]
 view(pfas_df)
+
+write_csv(pfas_df, "wtc_pfas.csv")
 ```
 
 ``` r
@@ -237,3 +239,133 @@ merged_df = demographic_df |>
   inner_join(lipids_df, by = "sid")
 view(merged_df)
 ```
+
+Correlation Matrix
+
+``` r
+# Select only PFAS numeric columns
+pfas_vars = c("pfos", "pfoa", "pfbs", "pf_hx_s", "pfds", "pfosa",
+               "pf_hx_a", "pf_hp_a", "pfda", "pf_un_da", "pf_do_da", "pfna")
+
+# Maternal correlation matrix
+maternal_cor = cor(maternal_df[, pfas_vars], use = "pairwise.complete.obs", method = "pearson")
+view(maternal_cor)
+
+# Cord correlation matrix
+cord_cor = cor(cord_df[, pfas_vars], use = "pairwise.complete.obs", method = "pearson")
+view(cord_cor)
+```
+
+``` r
+library(corrplot)
+```
+
+    ## corrplot 0.95 loaded
+
+``` r
+corrplot(maternal_cor, method = "color", type = "lower",
+         addCoef.col = "black", tl.col = "black", tl.srt = 45,
+         title = "Maternal PFAS Correlations", mar = c(0,0,2,0))
+```
+
+![](pfas_files/figure-gfm/unnamed-chunk-13-1.png)<!-- -->
+
+``` r
+corrplot(cord_cor, method = "color", type = "lower",
+         addCoef.col = "black", tl.col = "black", tl.srt = 45,
+         title = "Cord PFAS Correlations", mar = c(0,0,2,0))
+```
+
+![](pfas_files/figure-gfm/unnamed-chunk-13-2.png)<!-- -->
+
+``` r
+library(dplyr)
+library(tidyr)
+
+combined_cor = combined_df |>
+  select(sample_type, all_of(pfas_vars)) |>
+  group_by(sample_type) |>
+  summarise(across(everything(), ~list(.)), .groups = "drop") |>
+  rowwise() |>
+  mutate(cor_matrix = list(cor(as.data.frame(across(where(is.list), ~ unlist(.))),
+                               use = "pairwise.complete.obs"))) |>
+  select(sample_type, cor_matrix)
+```
+
+Heatmap
+
+``` r
+pfas_vars <- c("pfos", "pfoa", "pfbs", "pf_hx_s", "pfds", "pfosa",
+               "pf_hx_a", "pf_hp_a", "pfda", "pf_un_da", "pf_do_da", "pfna")
+
+maternal_cor <- cor(maternal_df[, pfas_vars], use = "pairwise.complete.obs")
+cord_cor     <- cor(cord_df[, pfas_vars], use = "pairwise.complete.obs")
+```
+
+``` r
+library(reshape2)
+```
+
+    ## 
+    ## Attaching package: 'reshape2'
+
+    ## The following object is masked from 'package:tidyr':
+    ## 
+    ##     smiths
+
+``` r
+library(dplyr)
+
+maternal_long <- melt(maternal_cor) |> 
+  mutate(sample_type = "Maternal")
+
+cord_long <- melt(cord_cor) |> 
+  mutate(sample_type = "Cord")
+
+cor_long <- bind_rows(maternal_long, cord_long)
+```
+
+``` r
+library(ggplot2)
+
+ggplot(cor_long, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red",
+                       midpoint = 0, limit = c(-1, 1)) +
+  facet_wrap(~sample_type) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(title = "PFAS Correlations in Maternal vs Cord Samples",
+       x = "", y = "", fill = "Correlation")
+```
+
+![](pfas_files/figure-gfm/unnamed-chunk-17-1.png)<!-- -->
+
+``` r
+pfas_vars <- c("pfos", "pfoa", "pfbs", "pf_hx_s", "pfds", "pfosa",
+               "pf_hx_a", "pf_hp_a", "pfda", "pf_un_da", "pf_do_da", "pfna")
+
+maternal_cor <- cor(maternal_df[, pfas_vars], use = "pairwise.complete.obs")
+cord_cor     <- cor(cord_df[, pfas_vars], use = "pairwise.complete.obs")
+
+# Difference (Maternal minus Cord)
+diff_cor <- maternal_cor - cord_cor
+
+library(reshape2)
+diff_long <- melt(diff_cor)
+
+library(ggplot2)
+
+ggplot(diff_long, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red",
+                       midpoint = 0, limit = c(-1, 1)) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(title = "Difference in PFAS Correlations (Maternal − Cord)",
+       x = "", y = "", fill = "Change Correlation")
+```
+
+![](pfas_files/figure-gfm/unnamed-chunk-18-1.png)<!-- --> Red represents
+strong correlations in maternal samples, blue represents strong
+correlations in cord samples, and white is similar in both.
