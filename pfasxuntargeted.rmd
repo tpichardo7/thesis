@@ -113,12 +113,28 @@ pfos_cor_test_results = merged |>
 pfos_cor_test_results_tidy = pfos_cor_test_results |> 
     map_df(~broom::tidy(.x)) |> 
     mutate(feature = feature_names) # add the names of the features if necessary
+```
 
+```{r}
+feature_names = names(c18_script)[-c(1:2)] # save the names of the features to subset the merged file
+
+# Run multiple correlation tests using the map function from the purrr package 
+pfoa_cor_test_results = merged |> 
+    dplyr::select(all_of(feature_names)) |> 
+    purrr::map(~cor.test(merged$log2_pfoa, .x, method = "pearson"))
+
+# Tidy the results (a list) into a dataframe using the tidy function from the broom package
+pfoa_cor_test_results_tidy = pfoa_cor_test_results |> 
+    map_df(~broom::tidy(.x)) |> 
+    mutate(feature = feature_names) # add the names of the features if necessary
 ```
 
 ## Adjust p-values using FDR (BH)
 ```{r}
 pfos_cor_test_results_tidy = pfos_cor_test_results_tidy |>
+  mutate(p_adj = p.adjust(p.value, method = "BH"))
+
+pfoa_cor_test_results_tidy = pfoa_cor_test_results_tidy |>
   mutate(p_adj = p.adjust(p.value, method = "BH"))
 ```
 
@@ -132,6 +148,17 @@ pfos_cor_test_results_tidy |>
     x = "Pearson correlation with log2(PFOS)",
     y = "-log10(FDR-adjusted p-value)",
     title = "Metabolite–PFOS Correlations"
+  ) +
+  theme_minimal()
+
+pfoa_cor_test_results_tidy |> 
+  ggplot(aes(x = estimate, y = -log10(p_adj))) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = -log10(0.05), color = "red", linetype = "dashed") +
+  labs(
+    x = "Pearson correlation with log2(PFOA)",
+    y = "-log10(FDR-adjusted p-value)",
+    title = "Metabolite–PFOA Correlations"
   ) +
   theme_minimal()
 ```
@@ -151,11 +178,29 @@ pfos_cor_test_results_tidy |>
     color = "Correlation Direction"
   ) +
   theme_minimal()
+
+pfoa_cor_test_results_tidy |> 
+  ggplot(aes(x = estimate, y = -log10(p_adj), color = estimate > 0)) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = -log10(0.05), color = "red", linetype = "dashed") +
+  scale_color_manual(values = c("TRUE" = "firebrick", "FALSE" = "steelblue"),
+                     labels = c("Negative", "Positive")) +
+  labs(
+    x = "Pearson correlation with log2(PFOA)",
+    y = "-log10(FDR-adjusted p-value)",
+    title = "Metabolite–PFOA Correlations",
+    color = "Correlation Direction"
+  ) +
+  theme_minimal()
 ```
 
 
 ```{r}
 pfos_cor_test_results_tidy |>
+  filter(p_adj < 0.05) |>
+  arrange(desc(abs(estimate)))
+
+pfoa_cor_test_results_tidy |>
   filter(p_adj < 0.05) |>
   arrange(desc(abs(estimate)))
 ```
@@ -166,7 +211,12 @@ pfos_cor_test_results_tidy |>
 top_hits = pfos_cor_test_results_tidy |>
   filter(p_adj < 0.05) |>         
   arrange(p_adj) |>                
-  slice_head(n = 10)                
+  slice_head(n = 10) 
+
+top_hits = pfoa_cor_test_results_tidy |>
+  filter(p_adj < 0.05) |>         
+  arrange(p_adj) |>                
+  slice_head(n = 10)   
 ```
 
 ## Annotate the top significant features in the scatter plot
@@ -193,6 +243,31 @@ pfos_cor_test_results_tidy |>
     x = "Pearson correlation with log2(PFOS)",
     y = "-log10(FDR-adjusted p-value)",
     title = "Metabolite–PFOS Correlations"
+  ) +
+  theme_minimal()
+
+pfoa_cor_test_results_tidy |>
+  ggplot(aes(x = estimate, y = -log10(p_adj), color = estimate > 0)) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = -log10(0.05), color = "red", linetype = "dashed") +
+  geom_text_repel(
+    data = top_hits,
+    aes(label = feature),
+    size = 3.5,
+    max.overlaps = 15,
+    box.padding = 0.4,
+    point.padding = 0.3,
+    segment.color = "gray50"
+  ) +
+  scale_color_manual(
+    values = c("TRUE" = "firebrick", "FALSE" = "steelblue"),
+    labels = c("Negative", "Positive"),
+    name = "Correlation Direction"
+  ) +
+  labs(
+    x = "Pearson correlation with log2(PFOA)",
+    y = "-log10(FDR-adjusted p-value)",
+    title = "Metabolite–PFOA Correlations"
   ) +
   theme_minimal()
 ```
@@ -279,12 +354,29 @@ pfos_cor_test_results = hilic_merged |>
 pfos_cor_test_results_tidy = pfos_cor_test_results |> 
     map_df(~broom::tidy(.x)) |> 
     mutate(feature = feature_names) # add the names of the features
+```
 
+```{r}
+#identify metabolite feature names
+feature_names = names(hilic_script)[-c(1:2)] # save the names of the features to subset the merged file
+
+# Run multiple Pearson correlations tests between PFOS and all metabolites using the map function from the purrr package ----
+pfoa_cor_test_results = hilic_merged |> 
+    dplyr::select(all_of(feature_names)) |> 
+    purrr::map(~cor.test(hilic_merged$log2_pfoa, .x, method = "pearson"))
+
+# Tidy the results (a list) into a dataframe using the tidy function from the broom package
+pfoa_cor_test_results_tidy = pfoa_cor_test_results |> 
+    map_df(~broom::tidy(.x)) |> 
+    mutate(feature = feature_names) # add the names of the features
 ```
 
 ```{r}
 # adjust p-values using FDR (BH)
 pfos_cor_test_results_tidy = pfos_cor_test_results_tidy |>
+  mutate(p_adj = p.adjust(p.value, method = "BH"))
+
+pfoa_cor_test_results_tidy = pfoa_cor_test_results_tidy |>
   mutate(p_adj = p.adjust(p.value, method = "BH"))
 ```
 
@@ -298,6 +390,17 @@ pfos_cor_test_results_tidy |>
     x = "Pearson correlation with log2(PFOS)",
     y = "-log10(FDR-adjusted p-value)",
     title = "Metabolite–PFOS Correlations"
+  ) +
+  theme_minimal()
+
+pfoa_cor_test_results_tidy |> 
+  ggplot(aes(x = estimate, y = -log10(p_adj))) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = -log10(0.05), color = "red", linetype = "dashed") +
+  labs(
+    x = "Pearson correlation with log2(PFOA)",
+    y = "-log10(FDR-adjusted p-value)",
+    title = "Metabolite–PFOA Correlations"
   ) +
   theme_minimal()
 ```
@@ -317,11 +420,29 @@ pfos_cor_test_results_tidy |>
     color = "Correlation Direction"
   ) +
   theme_minimal()
+
+pfoa_cor_test_results_tidy |> 
+  ggplot(aes(x = estimate, y = -log10(p_adj), color = estimate > 0)) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = -log10(0.05), color = "red", linetype = "dashed") +
+  scale_color_manual(values = c("TRUE" = "firebrick", "FALSE" = "steelblue"),
+                     labels = c("Negative", "Positive")) +
+  labs(
+    x = "Pearson correlation with log2(PFOA)",
+    y = "-log10(FDR-adjusted p-value)",
+    title = "Metabolite–PFOA Correlations",
+    color = "Correlation Direction"
+  ) +
+  theme_minimal()
 ```
 
 
 ```{r}
 map_corr = pfos_cor_test_results_tidy |>
+  filter(p_adj < 0.05) |>
+  arrange(desc(abs(estimate)))
+
+map_corr = pfoa_cor_test_results_tidy |>
   filter(p_adj < 0.05) |>
   arrange(desc(abs(estimate)))
 ```
@@ -331,7 +452,12 @@ map_corr = pfos_cor_test_results_tidy |>
 top_hits = pfos_cor_test_results_tidy |>
   filter(p_adj < 0.05) |>         
   arrange(p_adj) |>                
-  slice_head(n = 10)                
+  slice_head(n = 10)   
+
+top_hits = pfoa_cor_test_results_tidy |>
+  filter(p_adj < 0.05) |>         
+  arrange(p_adj) |>                
+  slice_head(n = 10) 
 ```
 
 ```{r}
@@ -360,10 +486,40 @@ pfos_cor_test_results_tidy |>
     title = "Metabolite–PFOS Correlations"
   ) +
   theme_minimal()
+
+pfoa_cor_test_results_tidy |>
+  ggplot(aes(x = estimate, y = -log10(p_adj), color = estimate > 0)) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = -log10(0.05), color = "red", linetype = "dashed") +
+  geom_text_repel(
+    data = top_hits,
+    aes(label = feature),
+    size = 3.5,
+    max.overlaps = 15,
+    box.padding = 0.4,
+    point.padding = 0.3,
+    segment.color = "gray50"
+  ) +
+  scale_color_manual(
+    values = c("TRUE" = "firebrick", "FALSE" = "steelblue"),
+    labels = c("Negative", "Positive"),
+    name = "Correlation Direction"
+  ) +
+  labs(
+    x = "Pearson correlation with log2(PFOA)",
+    y = "-log10(FDR-adjusted p-value)",
+    title = "Metabolite–PFOA Correlations"
+  ) +
+  theme_minimal()
 ```
 
 ```{r}
 ggplot(pfos_cor_test_results_tidy, aes(x = estimate, y = -log10(p_adj))) +
+  geom_point() +
+  geom_smooth(method = "lm", color = "red") +
+  theme_bw()
+
+ggplot(pfoa_cor_test_results_tidy, aes(x = estimate, y = -log10(p_adj))) +
   geom_point() +
   geom_smooth(method = "lm", color = "red") +
   theme_bw()
